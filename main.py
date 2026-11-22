@@ -1,69 +1,76 @@
-"""Ship the broadsheet: place the finished front page where the grader looks.
+"""Put the finished front page where the competition expects it.
 
-The page itself is drawn by render_news_image_20261121.py and stored in
-this repository as frontpage.png. This entrypoint does one small job and
-does it out loud: it carries that page into the output folder under the
-name the competition asks for, then proves the copy is a whole PNG of the
-right size before it exits.
+The broadsheet lives in this repository as frontpage.png. This script
+reads it, makes sure it is a whole PNG of the right shape, and writes
+an identical copy called entry.png into the output directory. It only
+uses the Python standard library and never touches the network.
 """
 
-import hashlib
 import os
 import sys
-from pathlib import Path
+from hashlib import sha256
 
-PNG_MAGIC = bytes((0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A))
-PAGE_NAME = "frontpage.png"
-OUTPUT_NAME = "entry.png"
-EXPECT_W, EXPECT_H = 1024, 1024
-
-
-def page_file():
-    here = Path(__file__).resolve().parent
-    return here / PAGE_NAME
+SIGNATURE = b"\x89PNG\r\n\x1a\n"
+PAGE_FILE = "frontpage.png"
+ENTRY_FILE = "entry.png"
+MAX_BYTES = 1048576
+EXPECTED_WIDTH = 1024
+EXPECTED_HEIGHT = 1024
 
 
-def output_folder():
+def check_limits(content, width, height):
+    if len(content) > MAX_BYTES:
+        sys.exit("page too large: " + str(len(content)) + " bytes, "
+                 + "limit is " + str(MAX_BYTES))
+    if width != EXPECTED_WIDTH or height != EXPECTED_HEIGHT:
+        sys.exit("wrong page size: " + str(width) + "x" + str(height)
+                 + ", expected " + str(EXPECTED_WIDTH) + "x"
+                 + str(EXPECTED_HEIGHT))
+
+
+def page_path():
+    folder = os.path.dirname(os.path.abspath(__file__))
+    found = os.path.join(folder, PAGE_FILE)
+    if not os.path.isfile(found):
+        sys.exit("front page not found beside this script: " + found)
+    return found
+
+
+def output_path():
     chosen = os.environ.get("MAKEFUN_OUTPUT_DIR") or "/output"
-    folder = Path(chosen)
-    folder.mkdir(parents=True, exist_ok=True)
-    return folder
+    os.makedirs(chosen, exist_ok=True)
+    return os.path.join(chosen, ENTRY_FILE)
 
 
-def check_png(data):
-    if len(data) < 8 or data[:8] != PNG_MAGIC:
-        raise SystemExit("frontpage.png is not a PNG: bad signature")
-    if b"IEND" not in data[-16:]:
-        raise SystemExit("frontpage.png looks cut off: no IEND trailer")
-    if len(data) < 29 or data[12:16] != b"IHDR":
-        raise SystemExit("frontpage.png has no IHDR chunk")
-    width = int.from_bytes(data[16:20], "big")
-    height = int.from_bytes(data[20:24], "big")
-    if (width, height) != (EXPECT_W, EXPECT_H):
-        raise SystemExit(
-            f"frontpage.png is {width}x{height}, expected "
-            f"{EXPECT_W}x{EXPECT_H}")
-    if len(data) > 1024 * 1024:
-        raise SystemExit(
-            f"frontpage.png is {len(data)} bytes, over the 1 MiB cap")
+def png_dimensions(content):
+    if len(content) < 8 or content[:8] != SIGNATURE:
+        sys.exit("not a PNG: the first bytes are not the PNG signature")
+    if content[12:16] != b"IHDR":
+        sys.exit("not a well-formed PNG: no IHDR chunk after the signature")
+    if b"IEND" not in content[-16:]:
+        sys.exit("PNG looks truncated: no IEND trailer at the end")
+    width = int.from_bytes(content[16:20], "big")
+    height = int.from_bytes(content[20:24], "big")
     return width, height
 
 
 def main():
-    page = page_file()
-    if not page.is_file():
-        raise SystemExit(f"missing page next to this script: {page}")
-    data = page.read_bytes()
-    width, height = check_png(data)
-    target = output_folder() / OUTPUT_NAME
-    target.write_bytes(data)
-    digest = hashlib.sha256(data).hexdigest()
-    if hashlib.sha256(target.read_bytes()).hexdigest() != digest:
-        raise SystemExit(f"copy failed: {target} does not match {page}")
-    print(f"wrote {target} ({width}x{height}, {len(data)} bytes, "
-          f"sha256 {digest})")
-    return 0
+    source = page_path()
+    with open(source, "rb") as handle:
+        content = handle.read()
+    width, height = png_dimensions(content)
+    check_limits(content, width, height)
+    target = output_path()
+    with open(target, "wb") as handle:
+        handle.write(content)
+    with open(target, "rb") as handle:
+        written = handle.read()
+    if sha256(written).digest() != sha256(content).digest():
+        sys.exit("copy check failed: " + target + " differs from " + source)
+    print("wrote " + target + " (" + str(width) + "x" + str(height) + ", "
+          + str(len(content)) + " bytes, sha256 "
+          + sha256(content).hexdigest() + ")")
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()
